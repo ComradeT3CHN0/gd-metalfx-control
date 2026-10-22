@@ -1,0 +1,285 @@
+diff --git a/Makefile b/Makefile
+index 02c46af..1227cbe 100644
+--- a/Makefile
++++ b/Makefile
+@@ -130,7 +130,7 @@ $(OUT)/libGLMetal.dylib: $(SRC_C) $(SRC_M) $(wildcard src/*.h) $(GENERATED) $(LI
+ 	$(CC) $(LIB_CFLAGS) -include $(GEN)/glm_impl_rename.h -dynamiclib $(SRC_C) $(GEN)/attrib_setters.c $(GEN)/stubs.c \
+ 		$(SRC_M) -fobjc-arc $(LIB_OBJS) $(DEP_LINK) -lc++ \
+ 		-install_name @rpath/libGLMetal.dylib -framework Metal -framework Foundation -framework QuartzCore \
+-		-framework CoreGraphics -framework AppKit -o $@
++		-framework CoreGraphics -framework AppKit -framework MetalFX -o $@
+ 
+ glcompare: $(OUT)/glcompare $(OUT)/libglcases.dylib
+ 
+diff --git a/src/context.c b/src/context.c
+index c65de4d..b22b4c6 100644
+--- a/src/context.c
++++ b/src/context.c
+@@ -595,6 +595,7 @@ GLM_EXPORT void glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
+ {
+     GLM_CONTEXT(ctx);
+     if (width < 0 || height < 0) return glm_error(ctx, GL_INVALID_VALUE);
++    if (getenv("GD_RETINA")) { static int last_w,last_h; if (width>100 && height>100 && (last_w!=width || last_h!=height)) { last_w=width;last_h=height;fprintf(stderr,"gd-display: game viewport=%dx%d\n",width,height); } }
+     const float value[4] = {(float)x, (float)y, width > 16384 ? 16384.0f : (float)width,
+                            height > 16384 ? 16384.0f : (float)height};
+     const GLint integer[4] = {x, y, width, height};
+diff --git a/src/metal_backend.m b/src/metal_backend.m
+index b5427a2..cf879bd 100644
+--- a/src/metal_backend.m
++++ b/src/metal_backend.m
+@@ -6,6 +6,10 @@
+  * row r to Metal row r; viewport, scissor and glReadPixels rectangles then
+  * need no conversion, and only presentation to a CAMetalLayer flips. */
+ #import <Metal/Metal.h>
++#import <MetalFX/MetalFX.h>
++#import <AppKit/NSScreen.h>
++#import "gd_framegen.h"
++#import "gd_effects.h"
+ #import <QuartzCore/QuartzCore.h>
+ #import <objc/message.h>
+ 
+@@ -268,6 +272,12 @@ static bool program_sampling_equal(const struct program_sampling_key *a, const s
+     id<MTLFunction> present_vertex, present_fragment;
+     id<MTLRenderPipelineState> present_pipeline;
+     MTLPixelFormat present_format;
++    id<MTLFXSpatialScaler> gd_fx;
++    id<MTLTexture> gd_fx_input, gd_fx_output;
++    bool gd_fx_reported;
++    GDFrameGenerator *gd_fg;
++    GDEffects *gd_effects;
++    bool gd_fg_present_reported;
+     /* Default framebuffer storage: the back colour image (the only one of
+        a single-buffered context), the front image of double-buffered ones,
+        and the pixel format's aux buffers. */
+@@ -632,6 +642,7 @@ void glm_backend_context_destroy(struct glm_backend_context *b)
+         for (int i = 0; i < GLM_MAX_DRAW_BUFFERS; ++i) b->clear_typed[kind][i] = nil;
+     b->present_vertex = b->present_fragment = nil;
+     b->present_pipeline = nil;
++    b->gd_fx = nil; b->gd_fx_input = nil; b->gd_fx_output = nil; b->gd_fg = nil; b->gd_effects = nil;
+     b->image_vertex = b->image_fragment = b->bitmap_fragment = nil;
+     b->visibility = nil;
+     b->last_pipeline = nil;
+@@ -1938,6 +1949,70 @@ static void dump_presented(struct glm_backend_context *b, id<MTLCommandBuffer> c
+ 
+ /* Copies the back buffer into the layer's next drawable and presents it
+    with the frame's command buffer. Returns false without a drawable. */
++/* Opt-in GD spatial upscaler. Framebuffer coordinates and game timing stay unchanged. */
++static double gd_fx_scale(void)
++{
++    static double scale = 0;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        const char *value = getenv("GD_METALFX_SCALE");
++        double requested = value ? atof(value) : 1.0;
++        scale = requested == 1.5 || requested == 2.0 || requested == 10.0 || requested == 20.0 ? requested : 1.0;
++    });
++    return scale;
++}
++static id<MTLTexture> gd_fx_encode(struct glm_backend_context *b, id<MTLCommandBuffer> commands,
++                                  id<MTLTexture> input, NSUInteger width, NSUInteger height)
++{
++    if (@available(macOS 13.0, *)) {
++        if (![MTLFXSpatialScalerDescriptor supportsDevice:device]) return input;
++        if (!b->gd_fx || b->gd_fx.inputWidth != input.width || b->gd_fx.inputHeight != input.height ||
++            b->gd_fx.outputWidth != width || b->gd_fx.outputHeight != height ||
++            b->gd_fx.colorTextureFormat != input.pixelFormat) {
++            MTLFXSpatialScalerDescriptor *desc = [MTLFXSpatialScalerDescriptor new];
++            desc.inputWidth = input.width; desc.inputHeight = input.height;
++            desc.outputWidth = width; desc.outputHeight = height;
++            desc.colorTextureFormat = input.pixelFormat; desc.outputTextureFormat = input.pixelFormat;
++            desc.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
++            b->gd_fx = [desc newSpatialScalerWithDevice:device];
++            if (!b->gd_fx) { fprintf(stderr, "gd-metalfx: scaler creation failed; using normal presentation\n"); return input; }
++            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:input.pixelFormat width:input.width height:input.height mipmapped:NO];
++            td.storageMode = MTLStorageModePrivate;
++            td.usage = b->gd_fx.colorTextureUsage;
++            b->gd_fx_input = [device newTextureWithDescriptor:td];
++            td.width = width; td.height = height; td.usage = b->gd_fx.outputTextureUsage | MTLTextureUsageShaderRead;
++            b->gd_fx_output = [device newTextureWithDescriptor:td];
++            b->gd_fx_reported = false;
++        }
++        if (!b->gd_fx_input || !b->gd_fx_output) return input;
++        id<MTLBlitCommandEncoder> copy = [commands blitCommandEncoder];
++        [copy copyFromTexture:input sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
++                  sourceSize:MTLSizeMake(input.width,input.height,1) toTexture:b->gd_fx_input destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
++        [copy endEncoding];
++        b->gd_fx.colorTexture = b->gd_fx_input; b->gd_fx.outputTexture = b->gd_fx_output;
++        b->gd_fx.inputContentWidth = input.width; b->gd_fx.inputContentHeight = input.height;
++        [b->gd_fx encodeToCommandBuffer:commands];
++        if (!b->gd_fx_reported) {
++            b->gd_fx_reported = true;
++            NSUInteger iw=input.width, ih=input.height;
++            [commands addCompletedHandler:^(id<MTLCommandBuffer> done) {
++                fprintf(stderr,"gd-metalfx: %lux%lu -> %lux%lu GPU %s%s\n",(unsigned long)iw,(unsigned long)ih,(unsigned long)width,(unsigned long)height,
++                        done.status == MTLCommandBufferStatusCompleted ? "completed" : "FAILED ", done.error ? done.error.localizedDescription.UTF8String : "");
++            }];
++        }
++        return b->gd_fx_output;
++    }
++    return input;
++}
++
++static int gd_fg_factor(void)
++{
++    static int factor = 1;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{ const char *env=getenv("GD_FRAMEGEN_FACTOR"); int requested=env?atoi(env):1; factor=requested==2||requested==4?requested:1; });
++    return factor;
++}
++
+ bool glm_backend_front_drawn(struct glm_context *ctx) { return ctx->backend->front_drawn; }
+ 
+ bool glm_backend_present(struct glm_context *ctx, void *layer_pointer, bool opaque, bool swap)
+@@ -1957,46 +2032,72 @@ bool glm_backend_present(struct glm_context *ctx, void *layer_pointer, bool opaq
+         b->framebuffer_dirty = true;
+     }
+     b->front_drawn = false;
+-    id<CAMetalDrawable> drawable = [layer nextDrawable];
+-    if (!drawable) {
+-        glm_backend_flush(ctx, false);
+-        return false;
+-    }
+-    if (!b->present_vertex) {
+-        b->present_vertex = utility_function(b, @"present_vertex");
+-        b->present_fragment = utility_function(b, @"present_fragment");
+-    }
+-    MTLPixelFormat format = drawable.texture.pixelFormat;
+-    if (!b->present_pipeline || b->present_format != format) {
+-        MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+-        d.vertexFunction = b->present_vertex;
+-        d.fragmentFunction = b->present_fragment;
+-        d.colorAttachments[0].pixelFormat = format;
+-        NSError *error = nil;
+-        b->present_pipeline = [device newRenderPipelineStateWithDescriptor:d error:&error];
+-        b->present_format = format;
+-        if (!b->present_pipeline) {
+-            glm_log("present pipeline: %s", error.localizedDescription.UTF8String);
+-            return false;
++    double fx_scale = gd_fx_scale();
++    if (fx_scale == 1.0 && !b->gd_fx_reported) {
++        fprintf(stderr,"gd-metalfx: Off (normal GLMetal rendering)\n");
++        b->gd_fx_reported = true;
++    }
++    if (fx_scale > 1.0) {
++        double actual = fmin(fmin(fx_scale, 2.0), fmin(16384.0 / shown.width, 16384.0 / shown.height));
++        CGSize target = CGSizeMake(lround(shown.width * actual), lround(shown.height * actual));
++        if (!CGSizeEqualToSize(layer.drawableSize, target)) layer.drawableSize = target;
++    }
++    int frame_factor = gd_fg_factor();
++    NSArray<id<MTLTexture>> *frames = @[shown];
++    if (frame_factor > 1) {
++        if (!b->gd_fg) b->gd_fg = [[GDFrameGenerator alloc] initWithDevice:device];
++        NSArray *generated = [b->gd_fg framesForTexture:shown commandBuffer:command_buffer(b) factor:frame_factor];
++        if (generated.count) frames = generated;
++    }
++    NSInteger refresh = 120;
++    if (@available(macOS 12.0,*)) { if(frame_factor>1) refresh=NSScreen.mainScreen.maximumFramesPerSecond; }
++    if (refresh < 30 || refresh > 360) refresh = 120;
++    dump_presented(b, command_buffer(b), shown);
++    for (NSUInteger index=0; index<frames.count; ++index) {
++        id<MTLTexture> frame = frames[index];
++        id<CAMetalDrawable> drawable = [layer nextDrawable];
++        if (!drawable) { glm_backend_flush(ctx, false); continue; }
++        if (!b->present_vertex) {
++            b->present_vertex = utility_function(b, @"present_vertex");
++            b->present_fragment = utility_function(b, @"present_fragment");
++        }
++        MTLPixelFormat format = drawable.texture.pixelFormat;
++        if (!b->present_pipeline || b->present_format != format) {
++            MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
++            d.vertexFunction = b->present_vertex; d.fragmentFunction = b->present_fragment;
++            d.colorAttachments[0].pixelFormat = format;
++            NSError *error = nil;
++            b->present_pipeline = [device newRenderPipelineStateWithDescriptor:d error:&error];
++            b->present_format = format;
++            if (!b->present_pipeline) { glm_log("present pipeline: %s", error.localizedDescription.UTF8String); return false; }
++        }
++        id<MTLCommandBuffer> commands = command_buffer(b);
++        if (!b->gd_effects) b->gd_effects=[[GDEffects alloc] initWithDevice:device];
++        frame=[b->gd_effects processTexture:frame commandBuffer:commands];
++        double actual = fmin(fx_scale, fmin(16384.0 / frame.width, 16384.0 / frame.height));
++        id<MTLTexture> presented = fx_scale > 1.0 ? gd_fx_encode(b, commands, frame, lround(frame.width*actual), lround(frame.height*actual)) : frame;
++        bool scaled = drawable.texture.width != presented.width || drawable.texture.height != presented.height;
++        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
++        sd.minFilter = sd.magFilter = scaled ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
++        id<MTLSamplerState> sampler = [device newSamplerStateWithDescriptor:sd];
++        MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
++        pass.colorAttachments[0].texture = drawable.texture;
++        pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
++        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
++        id<MTLRenderCommandEncoder> e = [commands renderCommandEncoderWithDescriptor:pass];
++        [e setRenderPipelineState:b->present_pipeline]; [e setFragmentTexture:presented atIndex:0];
++        [e setFragmentSamplerState:sampler atIndex:0]; [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [e endEncoding];
++        if (frames.count > 1 && !b->gd_fg_present_reported && index == 0) {
++            b->gd_fg_present_reported = true;
++            [drawable addPresentedHandler:^(id<MTLDrawable> displayed) {
++                fprintf(stderr,"gd-framegen: generated frame presented at %.6f; target display %ld Hz\n",displayed.presentedTime,(long)refresh);
++            }];
+         }
++        if(frame_factor>1) [commands presentDrawable:drawable afterMinimumDuration:1.0/refresh];
++        else [commands presentDrawable:drawable];
++        glm_backend_flush(ctx, false);
+     }
+-    bool scaled = drawable.texture.width != shown.width || drawable.texture.height != shown.height;
+-    MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+-    sd.minFilter = sd.magFilter = scaled ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+-    id<MTLSamplerState> sampler = [device newSamplerStateWithDescriptor:sd];
+-    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+-    pass.colorAttachments[0].texture = drawable.texture;
+-    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+-    id<MTLCommandBuffer> commands = command_buffer(b);
+-    id<MTLRenderCommandEncoder> e = [commands renderCommandEncoderWithDescriptor:pass];
+-    [e setRenderPipelineState:b->present_pipeline];
+-    [e setFragmentTexture:shown atIndex:0];
+-    [e setFragmentSamplerState:sampler atIndex:0];
+-    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+-    [e endEncoding];
+     (void)opaque;
+-    dump_presented(b, commands, shown);
+     ++glm_trace_frames;
+     if (b->inline_bytes_stats && ++b->reported_frames == 60) {
+         fprintf(stderr, "glmetal: render passes per frame=%.2f\n", (b->pass_id - b->reported_pass_id) / 60.0);
+@@ -2004,7 +2105,6 @@ bool glm_backend_present(struct glm_context *ctx, void *layer_pointer, bool opaq
+         b->reported_frames = 0;
+     }
+     report_slow_frame();
+-    [commands presentDrawable:drawable];
+     glm_backend_flush(ctx, false);
+     return true;
+ }
+diff --git a/src/surface.m b/src/surface.m
+index b232ed4..8d0ba7a 100644
+--- a/src/surface.m
++++ b/src/surface.m
+@@ -104,6 +104,8 @@ static void layout(struct glm_surface *s)
+     if (width < 1) width = 1;
+     if (height < 1) height = 1;
+     layer.drawableSize = CGSizeMake(width, height);
++    if (getenv("GLMETAL_DEBUG") && (s->width != width || s->height != height))
++        fprintf(stderr,"gd-display: drawable=%dx%d view=%.0fx%.0f backingScale=%.1f bestResolution=%d\n",width,height,bounds.size.width,bounds.size.height,window_scale,s->best_resolution);
+     [CATransaction commit];
+     __atomic_store_n(&s->width, width, __ATOMIC_RELEASE);
+     __atomic_store_n(&s->height, height, __ATOMIC_RELEASE);
+diff --git a/tools/build_deps.sh b/tools/build_deps.sh
+index 04cd4ca..c08cd10 100755
+--- a/tools/build_deps.sh
++++ b/tools/build_deps.sh
+@@ -29,7 +29,7 @@ common="-DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64;arm64 -DCMAK
+ 
+ if [ ! -f "$install/lib/libglslang.a" ]; then
+     # shellcheck disable=SC2086
+-    cmake -S "$deps/glslang" -B "$deps/build-glslang" -G Ninja $common -DENABLE_OPT=OFF \
++    cmake -S "$deps/glslang" -B "$deps/build-glslang" -G "Unix Makefiles" $common -DENABLE_OPT=OFF \
+         -DGLSLANG_TESTS=OFF -DGLSLANG_ENABLE_INSTALL=ON -DENABLE_GLSLANG_BINARIES=OFF -DENABLE_HLSL=OFF
+     cmake --build "$deps/build-glslang"
+     cmake --install "$deps/build-glslang"
+@@ -37,7 +37,7 @@ fi
+ 
+ if [ ! -f "$install/lib/libspirv-cross-msl.a" ]; then
+     # shellcheck disable=SC2086
+-    cmake -S "$deps/SPIRV-Cross" -B "$deps/build-SPIRV-Cross" -G Ninja $common \
++    cmake -S "$deps/SPIRV-Cross" -B "$deps/build-SPIRV-Cross" -G "Unix Makefiles" $common \
+         -DSPIRV_CROSS_CLI=OFF -DSPIRV_CROSS_ENABLE_TESTS=OFF -DSPIRV_CROSS_ENABLE_HLSL=OFF \
+         -DSPIRV_CROSS_ENABLE_CPP=OFF -DSPIRV_CROSS_ENABLE_REFLECT=ON -DSPIRV_CROSS_ENABLE_UTIL=OFF \
+         -DSPIRV_CROSS_ENABLE_C_API=OFF

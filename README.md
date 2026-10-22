@@ -2,6 +2,8 @@
 
 An experimental macOS graphics launcher and control panel for the **Steam version of Geometry Dash**. Built with **OpenAI Codex**, directed and tested by **ComradeT3CHN0**.
 
+Editor's note: This can **SIGNIFICANTLY** increase your framerate if you are on mac. I went from stuttering 120 on OpenGL to intermittent 480 with Metal! Even with MetalFX enabled (basically Mac's version of NVIDIA DLSS), it can hold 120 Easy. Tested on Khorne, a high object level.
+
 The game is required and is not included. This repository contains the controller, custom graphics extensions, tests, and a small integration patch. GLMetal is fetched from its original repository during a local build; no game assets or third-party binaries are distributed here.
 
 ## Features

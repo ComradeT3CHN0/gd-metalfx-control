@@ -1,4 +1,4 @@
-# GD MetalFX Control
+# GD MetalFX Control- A Geometry Dash Metal renderer for macOS. Boost FPS on Apple Silicon with GLMetal, MetalFX upscaling, frame generation, and graphics controls.
 
 Note from the dev: This can **SIGNIFICANTLY** increase your framerate if you are on mac. I went from stuttering 120 on OpenGL to intermittent 480 with Metal! Even with MetalFX enabled (basically Mac's version of NVIDIA DLSS), it can hold 120 Easy. Tested on Khorne, a high object level.
 

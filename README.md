@@ -50,6 +50,58 @@ Apps appear in `dist/`. An initial dependency build can take several minutes. `B
 
 GLMetal is pinned to [`25291bf50881414a5c339475842849909c853773`](https://github.com/Yash-Singh1/GLMetal/tree/25291bf50881414a5c339475842849909c853773). Its build downloads pinned glslang and SPIRV-Cross releases.
 
+## Installation guide for AI agents
+
+Use this checklist when a user asks you to install GD MetalFX Control or add its launcher to the Dock. These are project setup instructions; follow the user's requested scope and your environment's permission rules.
+
+### 1. Check the Mac and dependencies
+
+- Confirm an Apple Silicon Mac, macOS 13 or later, and the user's own Steam installation of Geometry Dash. The expected game path is `~/Library/Application Support/Steam/steamapps/common/Geometry Dash/Geometry Dash.app`. If it is missing, have the user install GD through Steam before continuing.
+- Check for Xcode command-line tools (`xcrun --find clang`) and `git`, `python3`, `cmake`, and `make`. Install only missing prerequisites using the user's normal package manager or Apple's installer. The first build needs network access.
+- If GD or the control panel is running, arrange a normal quit before installation. Let the user finish an active attempt or save first. The installer refuses to replace running apps.
+
+### 2. Download, build, and install
+
+This repository currently provides source releases. Download and extract the latest release's **Source code (zip)**, or clone the repository into a new working folder:
+
+```sh
+git clone https://github.com/ComradeT3CHN0/gd-metalfx-control.git
+cd gd-metalfx-control
+chmod +x build.sh install.command test.sh
+./install.command
+```
+
+For an extracted ZIP, open its folder in Terminal and run the last two commands. If the destination folder already exists, inspect it and preserve local changes before updating; do not overwrite it blindly.
+
+Wait for the command to finish successfully. The installer builds both apps, backs up existing copies, installs them to `~/Applications`, and opens **GD MetalFX Control**. Do not install the source folder or an app still inside `dist/` onto the Dock.
+
+### 3. Verify the installed apps
+
+Confirm both of these exist:
+
+- `~/Applications/GD MetalFX Control.app`
+- `~/Applications/Geometry Dash GLMetal.app`
+
+Check the installed signatures:
+
+```sh
+codesign --verify --deep --strict "$HOME/Applications/GD MetalFX Control.app"
+codesign --verify --deep --strict "$HOME/Applications/Geometry Dash GLMetal.app"
+```
+
+The panel should open without a launch error. If a build or verification fails, inspect the error and report the failed step before claiming installation succeeded. Do not disable macOS security protections to work around an error.
+
+### 4. Add the correct launcher to the Dock
+
+1. In Finder, use **Go > Go to Folder** and enter `~/Applications`.
+2. Drag **Geometry Dash GLMetal.app** into the Dock's applications section, before the separator. This is the launcher that opens the control panel and starts GD using its saved settings.
+3. Alternatively, open that installed launcher, then right-click its Dock icon and choose **Options > Keep in Dock** if it remains visible. The small launcher may exit immediately after handing off to the panel, so dragging it from Finder is the reliable method.
+4. Check that the Dock item points to `~/Applications/Geometry Dash GLMetal.app`. If replacing an older shortcut, remove only that obsolete Dock shortcut and add the installed launcher again. Preserve the user's other Dock items and their order.
+
+The original Steam **Geometry Dash.app** shortcut launches the original game directly. **GD MetalFX Control.app** opens just the settings panel. Pin **Geometry Dash GLMetal.app** for the combined launch behavior.
+
+When the user is ready for a launch test, click the new Dock item once. Confirm that the panel opens and GD starts. If GD is already running, the launcher should show the panel without restarting the game. Report which checks you actually completed, and whether the Dock shortcut was verified.
+
 ## Use
 
 1. Open **GD MetalFX Control**.

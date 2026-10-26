@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #include <unistd.h>
+#import "gd-fps-settings.h"
 static void run(NSArray<NSString *> *args) {
  NSTask *task=[NSTask new];task.executableURL=[NSURL fileURLWithPath:@"/usr/bin/open"];task.arguments=args;
  NSError *error=nil;if(![task launchAndReturnError:&error]) @throw [NSException exceptionWithName:@"Launch" reason:error.localizedDescription userInfo:nil];
@@ -40,17 +41,28 @@ int main(int argc, const char **argv){@autoreleasepool{@try{
  }
  BOOL metal=argc<=3||strcmp(argv[3],"opengl")!=0;
  BOOL retina=argc>4&&strcmp(argv[4],"1")==0;
+ BOOL vsync=argc>5&&strcmp(argv[5],"1")==0;
+ NSInteger maxFPS=argc>6?[[NSString stringWithUTF8String:argv[6]] integerValue]:120;
+ if(argc>6)GDFPSApply(GDFPSPath(),[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/GD MetalFX Control/Settings backups"],vsync,maxFPS);
  retinaSetting(game,retina);
  NSString *resources=[[NSString stringWithUTF8String:argv[0]] stringByDeletingLastPathComponent];
  NSString *logs=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/Geometry Dash MetalFX"];
  [NSFileManager.defaultManager createDirectoryAtPath:logs withIntermediateDirectories:YES attributes:nil error:nil];
  NSString *stamp=[NSString stringWithFormat:@"%.0f",NSDate.date.timeIntervalSince1970];NSString *log=[logs stringByAppendingPathComponent:[stamp stringByAppendingString:@".log"]];
- NSDictionary *state=@{@"renderer":metal?@"GLMetal":@"Apple OpenGL",@"retina":@(retina),@"scale":metal&&argc>1?@(atof(argv[1])):@1,@"framegen":metal&&argc>2?@(atoi(argv[2])):@1};
+ NSDictionary *state=@{@"renderer":metal?@"GLMetal":@"Apple OpenGL",@"retina":@(retina),@"vsync":@(vsync),@"maxFPS":@(maxFPS),@"scale":metal&&argc>1?@(atof(argv[1])):@1,@"framegen":metal&&argc>2?@(atoi(argv[2])):@1};
  NSData *stateData=[NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:nil];[stateData writeToFile:[log stringByAppendingString:@".launch.json"] atomically:YES];
  NSMutableArray *args=[NSMutableArray arrayWithArray:@[@"-a",game,@"--stdout",[log stringByAppendingString:@".stdout"],@"--stderr",log,@"--env",@"SteamAppId=322170",@"--env",@"SteamGameId=322170",@"--env",@"CURL_SSL_BACKEND=openssl",@"--env",[NSString stringWithFormat:@"GD_RETINA=%d",retina]]];
  if(metal){[args addObjectsFromArray:@[@"--env",@"GLMETAL_DEBUG=1",@"--env",[NSString stringWithFormat:@"GD_FRAMEGEN_FACTOR=%s",argc>2?argv[2]:"1"],@"--env",[NSString stringWithFormat:@"GD_METALFX_SCALE=%s",argc>1?argv[1]:"2"],@"--env",[@"GLMETAL_PATH=" stringByAppendingString:[resources stringByAppendingPathComponent:@"libGLMetal.dylib"]],@"--env",[@"DYLD_INSERT_LIBRARIES=" stringByAppendingString:[NSString stringWithFormat:@"%@:%@",[resources stringByAppendingPathComponent:@"libGLMetalInject.dylib"],[resources stringByAppendingPathComponent:@"libGDRetinaControl.dylib"]]]]];}
  else [args addObjectsFromArray:@[@"--env",[@"DYLD_INSERT_LIBRARIES=" stringByAppendingString:[resources stringByAppendingPathComponent:@"libGDRetinaControl.dylib"]],@"--env",@"GLMETAL_PATH=",@"--env",@"GD_FRAMEGEN_FACTOR=1",@"--env",@"GD_METALFX_SCALE=1"]];
+ // GD's Mac loop follows CVDisplayLink even with its saved VSync flag off.
+ // Use a separate callback clock only when interpolation and VSync are off.
+ if(argc>6&&!vsync&&(!metal||argc<=2||atoi(argv[2])==1)){
+  NSUInteger index=[args indexOfObjectPassingTest:^BOOL(id value,NSUInteger i,BOOL *stop){return [value isKindOfClass:NSString.class]&&[value hasPrefix:@"DYLD_INSERT_LIBRARIES="]; }];
+  if(index!=NSNotFound)args[index]=[args[index] stringByAppendingFormat:@":%@",[resources stringByAppendingPathComponent:@"libGDFramePacer.dylib"]];
+  [args addObjectsFromArray:@[@"--env",[NSString stringWithFormat:@"GD_TARGET_FPS=%ld",(long)maxFPS]]];
+  [args addObjectsFromArray:@[@"--env",[@"GD_TIMING_PATH=" stringByAppendingString:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/GD MetalFX Control/timing.json"]]]];
+ }
  [args addObjectsFromArray:@[@"--args",@"-AppleMagnifiedMode",retina?@"NO":@"YES"]];
  run(args);
  return 0;
- }@catch(NSException *e){[NSApplication sharedApplication];NSAlert *alert=[NSAlert new];alert.messageText=@"Geometry Dash could not start";alert.informativeText=e.reason?:@"Unknown launch error";[alert runModal];return 1;}}}
+ }@catch(NSException *e){fprintf(stderr,"%s\n",(e.reason?:@"Unknown launch error").UTF8String);return 1;}}}

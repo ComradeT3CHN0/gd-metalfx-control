@@ -9,6 +9,7 @@ The game is required and is not included. This repository contains the controlle
 ## Features
 
 - **Renderer:** Metal through GLMetal, or the original Apple OpenGL renderer.
+- **Timing:** VSync on/off and a max FPS textbox (1–10000). With VSync and frame generation off at launch, press Return or leave the textbox to update the cap live. The helper paces GD's display callback independently of the monitor. On Metal it also avoids waiting for a screen drawable on every engine frame: GD continues rendering offscreen between display updates, while the screen presents at its reported refresh rate. The FPS counter reports engine frames, not extra physical display refreshes. Actual FPS depends on rendering load. VSync-on and frame-generation launches keep their existing clock. Changing VSync requires Restart.
 - **Retina:** on/off, applied when the game next launches. A drawing-view helper handles GD's `EAGLView` override.
 - **MetalFX Spatial Upscaling:** off, 1.5×, 2×, and experimental 10× / 20× requested output scales. Output is capped at 16,384 pixels on either side, preserving aspect ratio. Extreme modes generate an oversized intermediate image and fit it back to the window.
 - **Custom frame generation:** off, 2× motion interpolation, or Extreme 4×. This is custom Metal interpolation, **not Apple's MetalFX frame interpolator**. It estimates motion between rendered frames and generates intermediate images.
@@ -53,11 +54,11 @@ GLMetal is pinned to [`25291bf50881414a5c339475842849909c853773`](https://github
 
 1. Open **GD MetalFX Control**.
 2. Choose the renderer and Retina setting in **Display**.
-3. Choose upscaling and optional interpolation in **Rendering**.
+3. Set VSync and max FPS in **Timing**. Choose upscaling and optional interpolation in **Rendering**.
 4. Click **Launch Geometry Dash**. Steam starts automatically if needed.
 5. Adjust **Glow**, **CRT**, and **Color** while playing. Effects apply live to a game started through this version of the launcher.
 
-Renderer, Retina, upscaling, and frame-generation changes apply on the next launch. The controller does not close a running game or interrupt an attempt.
+Renderer, Retina, VSync, upscaling, and frame-generation changes require a restart. The button becomes **Restart Geometry Dash** while the game is open and closes it normally before relaunching. Clicking the Dock launcher while GD is already open only shows the panel. Max FPS updates live after Return or leaving the box when GD was launched with VSync and frame generation off. The restart notice stays visible until those settings are applied.
 
 ## What the options actually do
 
@@ -77,7 +78,7 @@ Before applying a different Retina setting while GD is closed, it backs up the g
 ~/Library/Application Support/GD MetalFX Control/Game backups/
 ```
 
-It changes `NSHighResolutionCapable`, signs the local bundle with an ad-hoc signature, and verifies the signature. If applying that change fails, it attempts to restore the previous files. Steam updates or file verification may restore the display setting; a later launch reapplies the saved choice. Game saves and levels are not edited by the controller.
+It changes `NSHighResolutionCapable`, signs the local bundle with an ad-hoc signature, and verifies the signature. If applying that change fails, it attempts to restore the previous files. Steam updates or file verification may restore the display setting; a later launch reapplies the saved choice. VSync and max FPS update only the corresponding settings in `CCGameManager.dat` while GD is closed, enabling its custom FPS option. The encrypted original is backed up under `~/Library/Application Support/GD MetalFX Control/Settings backups/` before each actual change. Level data and unrelated settings are preserved. If a future game version changes the save format, the launcher refuses the update.
 
 The launch environment includes `CURL_SSL_BACKEND=openssl`, which fixed online-feature TLS failures in the local GLMetal tests. Certificate verification is not disabled.
 
@@ -99,7 +100,7 @@ Logs are available through **Show logs** and at:
 ./test.sh
 ```
 
-Tests use generated images, not game files. They check disabled-effect pixel identity, bloom spill, CRT curvature, color adjustments, grayscale, combined effects, live disable, and intermediate positions for 2× / 4× motion interpolation with Metal validation enabled. They require a working Metal GPU session.
+Frame-pacer tests verify callback timestamps, stop/restart, and live 60/240 FPS target changes. FPS settings tests use a synthetic encrypted fixture to check setting changes, exact preservation of unrelated data, backups, validation, and unchanged launches. Graphics tests use generated images, not game files. They check disabled-effect pixel identity, bloom spill, CRT curvature, color adjustments, grayscale, combined effects, live disable, and intermediate positions for 2× / 4× motion interpolation with Metal validation enabled. They require a working Metal GPU session.
 
 Local integration checks also covered generated-frame presentation, effects combined with interpolation and upscaling, both renderers in GD, and Retina on/off drawing-surface sizes. This remains experimental software, not a general compatibility certification or performance benchmark.
 

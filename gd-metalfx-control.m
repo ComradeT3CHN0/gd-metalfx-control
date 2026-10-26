@@ -1,9 +1,14 @@
 #import <Cocoa/Cocoa.h>
-@interface FXController : NSObject <NSApplicationDelegate>
+#import "gd-fps-settings.h"
+@interface FXController : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
 @property BOOL pendingLaunch;
+@property(strong) NSTask *launchTask;
+@property(strong) NSButton *launchButton;
+@property BOOL restarting;
 @property(strong) NSWindow *window;
 @property(strong) NSPopUpButton *mode,*framegen,*backend;
-@property(strong) NSButton *retina;
+@property(strong) NSButton *retina,*vsync;
+@property(strong) NSTextField *maxFPS;
 @property(strong) NSTextField *status;
 @property(strong) NSMutableDictionary<NSString*,NSControl*> *effects;
 @property(strong) NSMutableDictionary<NSString*,NSTextField*> *values;
@@ -23,9 +28,15 @@ static NSString *effectsPath(void){return [NSHomeDirectory() stringByAppendingPa
  NSSlider*s=[NSSlider sliderWithValue:[NSUserDefaults.standardUserDefaults doubleForKey:key] minValue:low maxValue:high target:self action:@selector(effectsChanged:)];s.frame=NSMakeRect(20,y,470,25);s.continuous=YES;self.effects[key]=s;[v addSubview:s];
 }
 - (void)applicationDidFinishLaunching:(NSNotification*)n {
- NSUserDefaults*p=NSUserDefaults.standardUserDefaults;[p registerDefaults:@{@"backendMode":@0,@"retinaEnabled":@NO,@"scaleMode":@2,@"bloomEnabled":@NO,@"bloomStrength":@0.5,@"bloomThreshold":@0.7,@"bloomRadius":@5,@"crtEnabled":@NO,@"scanlines":@0.2,@"curvature":@0.08,@"rgbMask":@0.12,@"colorEnabled":@NO,@"saturation":@1,@"contrast":@1,@"sharpen":@0,@"grayscale":@NO}];
+ NSUserDefaults*p=NSUserDefaults.standardUserDefaults;
+ NSDictionary *initialFPS=@{@"vsync":@YES,@"maxFPS":@120};
+ @try {initialFPS=GDFPSRead(GDFPSPath());} @catch(NSException *e) {}
+ [p registerDefaults:@{@"vsyncEnabled":initialFPS[@"vsync"],@"maxFPS":initialFPS[@"maxFPS"]}];
+ [p registerDefaults:@{@"backendMode":@0,@"retinaEnabled":@NO,@"scaleMode":@2,@"bloomEnabled":@NO,@"bloomStrength":@0.5,@"bloomThreshold":@0.7,@"bloomRadius":@5,@"crtEnabled":@NO,@"scanlines":@0.2,@"curvature":@0.08,@"rgbMask":@0.12,@"colorEnabled":@NO,@"saturation":@1,@"contrast":@1,@"sharpen":@0,@"grayscale":@NO}];
  self.effects=[NSMutableDictionary new];self.values=[NSMutableDictionary new];
  NSMenu*menu=[NSMenu new];NSMenuItem*item=[NSMenuItem new];[menu addItem:item];NSMenu*sub=[NSMenu new];[sub addItemWithTitle:@"Quit GD MetalFX Control" action:@selector(terminate:) keyEquivalent:@"q"];item.submenu=sub;NSApp.mainMenu=menu;
+ NSMenuItem *editItem=[NSMenuItem new];[menu addItem:editItem];NSMenu *edit=[[NSMenu alloc]initWithTitle:@"Edit"];editItem.submenu=edit;
+ [edit addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];[edit addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];[edit addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];[edit addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
  self.window=[[NSWindow alloc]initWithContentRect:NSMakeRect(0,0,580,650) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];self.window.title=@"GD MetalFX Control";[self.window center];NSView*root=self.window.contentView;
  [root addSubview:label(@"Geometry Dash + MetalFX",NSMakeRect(26,595,528,32),24)];[root addSubview:label(@"Rendering and live visual effects",NSMakeRect(26,564,528,24),14)];
  NSTabView*tabs=[[NSTabView alloc]initWithFrame:NSMakeRect(24,171,532,384)];[root addSubview:tabs];
@@ -33,13 +44,19 @@ static NSString *effectsPath(void){return [NSHomeDirectory() stringByAppendingPa
  [v addSubview:label(@"Graphics renderer",NSMakeRect(20,304,155,24),14)];self.backend=[[NSPopUpButton alloc]initWithFrame:NSMakeRect(180,300,310,30) pullsDown:NO];[self.backend addItemsWithTitles:@[@"Metal via GLMetal",@"Apple OpenGL"]];[self.backend selectItemAtIndex:MAX(0,MIN(1,[p integerForKey:@"backendMode"]))];self.backend.target=self;self.backend.action=@selector(save:);[v addSubview:self.backend];
  [v addSubview:label(@"GLMetal translates GD’s OpenGL graphics to Metal. Apple OpenGL uses the original renderer. MetalFX, frame generation, and these visual effects require GLMetal.",NSMakeRect(20,207,470,77),13)];
  self.retina=[NSButton checkboxWithTitle:@"Enable Retina rendering" target:self action:@selector(save:)];self.retina.frame=NSMakeRect(20,154,470,28);self.retina.state=[p boolForKey:@"retinaEnabled"]?NSControlStateValueOn:NSControlStateValueOff;[v addSubview:self.retina];
- [v addSubview:label(@"Retina renders at the display’s full pixel density. It can substantially increase GPU work. Both display settings apply on the next game launch.",NSMakeRect(20,63,470,77),13)];
+ [v addSubview:label(@"Retina renders at the display’s full pixel density. It can substantially increase GPU work. Display settings apply on the next game launch.",NSMakeRect(20,63,470,77),13)];
  v=[self pane:@"Rendering" tabs:tabs];
  [v addSubview:label(@"Output scaling",NSMakeRect(20,306,150,24),14)];self.mode=[[NSPopUpButton alloc]initWithFrame:NSMakeRect(180,301,310,30) pullsDown:NO];[self.mode addItemsWithTitles:@[@"Off",@"MetalFX · 1.5×",@"MetalFX · 2×",@"Extreme · 10× requested",@"Extreme · 20× requested"]];[self.mode selectItemAtIndex:MAX(0,MIN(4,[p integerForKey:@"scaleMode"]))];self.mode.target=self;self.mode.action=@selector(save:);[v addSubview:self.mode];
  [v addSubview:label(@"Extreme scaling can be very slow. Output is limited to 16,384 pixels per side.",NSMakeRect(20,236,470,50),13)];
  [v addSubview:label(@"Frame generation",NSMakeRect(20,185,155,24),14)];self.framegen=[[NSPopUpButton alloc]initWithFrame:NSMakeRect(180,180,310,30) pullsDown:NO];[self.framegen addItemsWithTitles:@[@"Off",@"2× · Motion interpolation",@"Extreme · 4× interpolation"]];[self.framegen selectItemAtIndex:MAX(0,MIN(2,[p integerForKey:@"framegenMode"]))];self.framegen.target=self;self.framegen.action=@selector(save:);[v addSubview:self.framegen];
  [v addSubview:label(@"Custom interpolation, separate from MetalFX. At 120 Hz: 2× aims for 60 rendered + 60 generated frames; 4× for 30 + 90. Can add ghosting and input lag.",NSMakeRect(20,77,470,83),13)];
  [v addSubview:label(@"Rendering changes apply on the next game launch.",NSMakeRect(20,20,470,35),12)];
+ v=[self pane:@"Timing" tabs:tabs];
+ self.vsync=[NSButton checkboxWithTitle:@"Enable VSync" target:self action:@selector(save:)];self.vsync.frame=NSMakeRect(20,302,470,28);self.vsync.state=[p boolForKey:@"vsyncEnabled"]?NSControlStateValueOn:NSControlStateValueOff;[v addSubview:self.vsync];
+ [v addSubview:label(@"VSync synchronizes frames with your display and can limit FPS to its refresh rate.",NSMakeRect(20,238,470,55),13)];
+ [v addSubview:label(@"Max FPS",NSMakeRect(20,190,150,24),14)];self.maxFPS=[[NSTextField alloc]initWithFrame:NSMakeRect(180,186,150,28)];self.maxFPS.stringValue=[NSString stringWithFormat:@"%ld",(long)[p integerForKey:@"maxFPS"]];self.maxFPS.target=self;self.maxFPS.action=@selector(save:);[self.maxFPS setAccessibilityLabel:@"Max FPS"];[v addSubview:self.maxFPS];
+ self.maxFPS.delegate=self;
+ [v addSubview:label(@"1 to 10000. Press Return or leave the box to apply. Max FPS updates live when GD was launched with VSync and frame generation off. Changing VSync needs Restart. This is a cap; demanding effects can reduce actual FPS.",NSMakeRect(20,48,470,122),13)];
  v=[self pane:@"Glow" tabs:tabs];[self check:@"Enable neon bloom" key:@"bloomEnabled" view:v y:310];[v addSubview:label(@"Soft glow around bright objects. These controls apply live.",NSMakeRect(20,266,470,35),13)];
  [self slider:@"Glow strength" key:@"bloomStrength" low:0 high:2.5 view:v y:212];[self slider:@"Brightness threshold" key:@"bloomThreshold" low:0.3 high:1 view:v y:140];[self slider:@"Glow radius" key:@"bloomRadius" low:1 high:16 view:v y:68];
  v=[self pane:@"CRT" tabs:tabs];[self check:@"Enable CRT screen" key:@"crtEnabled" view:v y:310];[v addSubview:label(@"Retro scanlines, curved screen edges, and an RGB mask.",NSMakeRect(20,266,470,35),13)];
@@ -47,8 +64,9 @@ static NSString *effectsPath(void){return [NSHomeDirectory() stringByAppendingPa
  v=[self pane:@"Color" tabs:tabs];[self check:@"Enable color controls" key:@"colorEnabled" view:v y:310];
  [self slider:@"Saturation" key:@"saturation" low:0 high:2 view:v y:242];[self slider:@"Contrast" key:@"contrast" low:0.5 high:1.5 view:v y:170];[self slider:@"Sharpening" key:@"sharpen" low:0 high:1 view:v y:98];[self check:@"Grayscale" key:@"grayscale" view:v y:38];
  NSButton*launch=[NSButton buttonWithTitle:@"Launch Geometry Dash" target:self action:@selector(launch:)];launch.frame=NSMakeRect(26,115,310,34);launch.bezelStyle=NSBezelStyleRounded;[root addSubview:launch];NSButton*logs=[NSButton buttonWithTitle:@"Show logs" target:self action:@selector(logs:)];logs.frame=NSMakeRect(350,115,205,34);logs.bezelStyle=NSBezelStyleRounded;[root addSubview:logs];
+ self.launchButton=launch;
  self.status=label(@"Ready. Visual effects apply live; rendering changes need a restart.",NSMakeRect(26,20,528,80),12);self.status.textColor=NSColor.secondaryLabelColor;[root addSubview:self.status];
- [self updateAvailability];[self updateValues];[self writeEffects:nil];[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];[NSTimer scheduledTimerWithTimeInterval:3 target:self selector:@selector(refresh:) userInfo:nil repeats:YES];if(self.pendingLaunch)[self launch:nil];
+ [self updateAvailability];[self updateValues];[self writeEffects:nil];[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];[NSTimer scheduledTimerWithTimeInterval:3 target:self selector:@selector(refresh:) userInfo:nil repeats:YES];if(self.pendingLaunch&&![NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.robtop.geometrydashmac"].count)[self launch:nil];
 }
 - (void)updateValues {for(NSString*key in self.values)self.values[key].stringValue=[NSString stringWithFormat:[key isEqualToString:@"bloomRadius"]?@"%.0f":@"%.2f",self.effects[key].doubleValue];}
 - (void)effectsChanged:(id)sender {
@@ -59,29 +77,63 @@ static NSString *effectsPath(void){return [NSHomeDirectory() stringByAppendingPa
  NSMutableDictionary*d=[NSMutableDictionary new];for(NSString*key in self.effects){NSControl*c=self.effects[key];d[key]=[c isKindOfClass:NSButton.class]?@(((NSButton*)c).state==NSControlStateValueOn):@(c.doubleValue);}
  NSString*path=effectsPath();NSError*error=nil;[NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:&error];NSData*data=[NSJSONSerialization dataWithJSONObject:d options:NSJSONWritingPrettyPrinted error:&error];if(!data||![data writeToFile:path options:NSDataWritingAtomic error:&error])self.status.stringValue=[@"Could not save effects: " stringByAppendingString:error.localizedDescription?:@"Unknown error"];
 }
-- (void)application:(NSApplication*)app openURLs:(NSArray<NSURL*>*)urls {for(NSURL*url in urls)if([url.scheme isEqualToString:@"gdmetalfx"]&&[url.host isEqualToString:@"launch"]){[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];if(self.mode)[self launch:nil];else self.pendingLaunch=YES;}}
+- (void)application:(NSApplication*)app openURLs:(NSArray<NSURL*>*)urls {for(NSURL*url in urls)if([url.scheme isEqualToString:@"gdmetalfx"]&&[url.host isEqualToString:@"launch"]){[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];if(self.mode){if(![NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.robtop.geometrydashmac"].count)[self launch:nil];else [self refresh:nil];}else self.pendingLaunch=YES;}}
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)app{return YES;}
-- (void)applicationWillTerminate:(NSNotification*)n{[self writeEffects:nil];}
+- (void)applicationWillTerminate:(NSNotification*)n{[self saveTiming];[self writeEffects:nil];}
+- (void)controlTextDidEndEditing:(NSNotification*)notification {if(notification.object==self.maxFPS)[self save:nil];}
 - (void)updateAvailability {
  BOOL metal=self.backend.indexOfSelectedItem==0;self.mode.enabled=metal;self.framegen.enabled=metal;
  for(NSControl *control in self.effects.allValues)control.enabled=metal;
 }
+- (BOOL)saveTiming {
+ NSString *text=[self.maxFPS.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+ NSCharacterSet *digits=[NSCharacterSet characterSetWithCharactersInString:@"0123456789"];
+ if(!text.length||[text rangeOfCharacterFromSet:digits.invertedSet].location!=NSNotFound||text.length>5||text.integerValue<1||text.integerValue>10000){self.status.stringValue=@"Max FPS must be a whole number from 1 to 10000.";return NO;}
+ [NSUserDefaults.standardUserDefaults setInteger:text.integerValue forKey:@"maxFPS"];
+ BOOL vsync=self.vsync.state==NSControlStateValueOn;[NSUserDefaults.standardUserDefaults setBool:vsync forKey:@"vsyncEnabled"];
+ NSString *path=[effectsPath().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"timing.json"];NSError *error=nil;
+ [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:&error];
+ NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"vsync":@(vsync),@"maxFPS":@(text.integerValue)} options:0 error:&error];
+ if(!data||![data writeToFile:path options:NSDataWritingAtomic error:&error]){self.status.stringValue=[@"Could not save timing: " stringByAppendingString:error.localizedDescription?:@"Unknown error"];return NO;}return YES;
+}
 - (void)save:(id)sender {
+ if(![self saveTiming])return;
  NSUserDefaults *p=NSUserDefaults.standardUserDefaults;
  [p setInteger:self.mode.indexOfSelectedItem forKey:@"scaleMode"];[p setInteger:self.framegen.indexOfSelectedItem forKey:@"framegenMode"];
  [p setInteger:self.backend.indexOfSelectedItem forKey:@"backendMode"];[p setBool:self.retina.state==NSControlStateValueOn forKey:@"retinaEnabled"];
  [self updateAvailability];self.status.stringValue=@"Saved. Quit GD normally and launch here to apply display or rendering changes.";
+ [self refresh:nil];
 }
 - (void)launch:(id)sender {
- [self save:nil];[self writeEffects:nil];if([NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.robtop.geometrydashmac"].count){self.status.stringValue=@"GD is running. Effects update live; restart GD to change rendering modes.";return;}
- NSArray*scales=@[@"1",@"1.5",@"2",@"10",@"20"];NSTask*task=[NSTask new];task.executableURL=[NSBundle.mainBundle URLForResource:@"launch-game" withExtension:nil];task.arguments=@[scales[self.mode.indexOfSelectedItem],@[@"1",@"2",@"4"][self.framegen.indexOfSelectedItem],self.backend.indexOfSelectedItem==0?@"metal":@"opengl",self.retina.state==NSControlStateValueOn?@"1":@"0"];NSError*error=nil;if(![task launchAndReturnError:&error])self.status.stringValue=error.localizedDescription;else self.status.stringValue=@"Starting Geometry Dash. Steam will open if needed…";
+ if(self.restarting)return;
+ if(self.launchTask.running){self.status.stringValue=@"A launch is already in progress. Please wait…";return;}
+ if(![self saveTiming])return;[self save:nil];[self writeEffects:nil];NSArray *running=[NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.robtop.geometrydashmac"];
+ if(running.count){
+  self.restarting=YES;self.status.stringValue=@"Waiting for GD to quit normally. Finish any save or quit prompt in the game.";
+  for(NSRunningApplication *game in running)[game terminate];
+  NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:60];
+  [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer){
+   if(![NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.robtop.geometrydashmac"].count){[timer invalidate];self.restarting=NO;[self launch:nil];}
+   else if(deadline.timeIntervalSinceNow<0){[timer invalidate];self.restarting=NO;self.status.stringValue=@"GD is still open. Quit normally, then click Launch.";}
+  }];return;
+ }
+ NSArray*scales=@[@"1",@"1.5",@"2",@"10",@"20"];NSTask*task=[NSTask new];task.executableURL=[NSBundle.mainBundle URLForResource:@"launch-game" withExtension:nil];task.arguments=@[scales[self.mode.indexOfSelectedItem],@[@"1",@"2",@"4"][self.framegen.indexOfSelectedItem],self.backend.indexOfSelectedItem==0?@"metal":@"opengl",self.retina.state==NSControlStateValueOn?@"1":@"0",self.vsync.state==NSControlStateValueOn?@"1":@"0",[NSString stringWithFormat:@"%ld",(long)[NSUserDefaults.standardUserDefaults integerForKey:@"maxFPS"]]];NSPipe *errors=[NSPipe pipe];task.standardError=errors;self.launchTask=task;
+ __weak FXController *weakSelf=self;task.terminationHandler=^(NSTask *finished){NSData *data=[errors.fileHandleForReading readDataToEndOfFile];NSString *message=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];dispatch_async(dispatch_get_main_queue(),^{FXController *controller=weakSelf;if(!controller)return;controller.launchTask=nil;if(finished.terminationStatus)controller.status.stringValue=message.length?message:@"Geometry Dash could not start. See the latest log.";else controller.status.stringValue=@"Launch request sent to Geometry Dash.";});};
+ NSError*error=nil;if(![task launchAndReturnError:&error]){self.launchTask=nil;self.status.stringValue=error.localizedDescription;}else self.status.stringValue=@"Starting Geometry Dash. Steam will open if needed…";
 }
 - (void)logs:(id)sender{NSString*path=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/Geometry Dash MetalFX"];[NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];[NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:path]];}
 - (void)refresh:(id)sender {
- if(![NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.robtop.geometrydashmac"].count)return;NSString*folder=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/Geometry Dash MetalFX"];NSArray*files=[[NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:nil]sortedArrayUsingSelector:@selector(compare:)];
+ BOOL running=[NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.robtop.geometrydashmac"].count>0;self.launchButton.title=running?@"Restart Geometry Dash":@"Launch Geometry Dash";
+ if(!running||self.restarting)return;NSString*folder=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/Geometry Dash MetalFX"];NSArray*files=[[NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:nil]sortedArrayUsingSelector:@selector(compare:)];
  for(NSString*name in files.reverseObjectEnumerator){if(![name hasSuffix:@".log"])continue;NSString *statePath=[[folder stringByAppendingPathComponent:name] stringByAppendingString:@".launch.json"];NSData *stateData=[NSData dataWithContentsOfFile:statePath];NSDictionary *state=stateData?[NSJSONSerialization JSONObjectWithData:stateData options:0 error:nil]:nil;
- if([state[@"renderer"] isEqualToString:@"Apple OpenGL"]){self.status.stringValue=[NSString stringWithFormat:@"GD is running with Apple OpenGL. Retina is %@. MetalFX and added effects are inactive.",[state[@"retina"] boolValue]?@"on":@"off"];break;}
-NSFileHandle*file=[NSFileHandle fileHandleForReadingAtPath:[folder stringByAppendingPathComponent:name]];unsigned long long length=[file seekToEndOfFile];[file seekToFileOffset:length>16384?length-16384:0];NSString*text=[[NSString alloc]initWithData:[file readDataToEndOfFile] encoding:NSUTF8StringEncoding];[file closeFile];if(!text.length)break;NSMutableArray*messages=[NSMutableArray new];for(NSString*prefix in @[@"gd-metalfx:",@"gd-framegen:",@"gd-effects:"]){NSRange r=[text rangeOfString:prefix options:NSBackwardsSearch];if(r.location!=NSNotFound)[messages addObject:[[[text substringFromIndex:r.location]componentsSeparatedByString:@"\n"]firstObject]];}if(messages.count)self.status.stringValue=[messages componentsJoinedByString:@"\n"];break;}
+ if(!state)break;
+ BOOL metal=self.backend.indexOfSelectedItem==0,vsync=self.vsync.state==NSControlStateValueOn;
+ NSArray *scales=@[@1,@1.5,@2,@10,@20],*frames=@[@1,@2,@4];
+ BOOL pending=vsync!=[state[@"vsync"] boolValue]||metal!=[state[@"renderer"] isEqualToString:@"GLMetal"]||(self.retina.state==NSControlStateValueOn)!=[state[@"retina"] boolValue]||(metal&&([scales[self.mode.indexOfSelectedItem] doubleValue]!=[state[@"scale"] doubleValue]||[frames[self.framegen.indexOfSelectedItem] integerValue]!=[state[@"framegen"] integerValue]));
+ if(pending){self.status.stringValue=@"Changes saved. Click Restart Geometry Dash to apply VSync or rendering changes. Restart will close the game normally.";break;}
+ if(!vsync&&[state[@"framegen"] integerValue]==1){self.status.stringValue=[NSString stringWithFormat:@"VSync off. Live FPS cap: %@. Actual FPS depends on the level and effects.\nFrame generation is off.",self.maxFPS.stringValue];break;}
+ self.status.stringValue=vsync?@"VSync on. FPS follows the display refresh rate. Disable VSync and click Restart to use a custom FPS cap.":@"Frame generation controls timing. Turn it off and click Restart to use a custom FPS cap.";break;
+ }
 }
 @end
 int main(void){@autoreleasepool{NSApplication*app=NSApplication.sharedApplication;app.activationPolicy=NSApplicationActivationPolicyRegular;FXController*controller=[FXController new];app.delegate=controller;[app run];}}

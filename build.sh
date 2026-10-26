@@ -32,13 +32,14 @@ xcrun clang -arch arm64 -arch x86_64 -O2 -fobjc-arc -framework Cocoa "$project_d
 xcrun clang -arch arm64 -arch x86_64 -O2 -framework Cocoa "$project_dir/gd-metalfx-launch.m" -o "$controller/Contents/Resources/launch-game"
 xcrun clang -arch arm64 -arch x86_64 -O2 -fobjc-arc -dynamiclib -framework Cocoa -Wno-deprecated-declarations "$project_dir/gd-retina-control.m" -o "$controller/Contents/Resources/libGDRetinaControl.dylib"
 xcrun clang -arch arm64 -arch x86_64 -O2 -framework Cocoa "$project_dir/gd-metalfx-relay.m" -o "$relay/Contents/MacOS/launch"
+xcrun clang -arch arm64 -arch x86_64 -O2 -dynamiclib -framework Cocoa -framework QuartzCore -framework CoreVideo -Wno-deprecated-declarations "$project_dir/gd-frame-pacer.m" -o "$controller/Contents/Resources/libGDFramePacer.dylib"
 for binary in libGLMetal.dylib libGLMetalInject.dylib glmetal-compiler; do
     cp "$glmetal_dir/build/$binary" "$controller/Contents/Resources/$binary"
 done
 python3 - "$controller" "$relay" <<'PY'
 import pathlib, plistlib, sys
 controller, relay = map(pathlib.Path, sys.argv[1:])
-common = {'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.4', 'CFBundleVersion': '5', 'LSMinimumSystemVersion': '13.0'}
+common = {'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.5.3', 'CFBundleVersion': '9', 'LSMinimumSystemVersion': '13.0'}
 info = dict(common, CFBundleExecutable='GD MetalFX Control', CFBundleName='GD MetalFX Control', CFBundleIdentifier='local.geometrydash.metalfx-control', NSHighResolutionCapable=True, CFBundleURLTypes=[{'CFBundleURLName':'Launch Geometry Dash with MetalFX','CFBundleURLSchemes':['gdmetalfx']}])
 (controller/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 info = dict(common, CFBundleExecutable='launch', CFBundleName='Geometry Dash GLMetal', CFBundleIdentifier='local.geometrydash.glmetal-launcher', LSUIElement=True, NSHighResolutionCapable=False)
